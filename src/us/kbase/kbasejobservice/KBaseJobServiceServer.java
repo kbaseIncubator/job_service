@@ -139,7 +139,7 @@ public class KBaseJobServiceServer extends JsonServerServlet {
         RunJobParams returnVal = null;
         //BEGIN get_job_params
         UserAndJobStateClient ujsClient = getUjsClient(authPart);
-        String shockNodeId = ujsClient.getState(SERVICE_NAME, "input:" + jobId, 0L).asScalar();
+        String shockNodeId = getUjsKeyState(ujsClient, "input:" + jobId).asScalar();
         BasicShockClient shockClient = getShockClient(authPart);
         ByteArrayOutputStream baos = new ByteArrayOutputStream();
         shockClient.getFile(new ShockNodeId(shockNodeId), baos);
@@ -148,6 +148,17 @@ public class KBaseJobServiceServer extends JsonServerServlet {
                 new ByteArrayInputStream(baos.toByteArray()), RunJobParams.class);
         //END get_job_params
         return returnVal;
+    }
+
+    private UObject getUjsKeyState(UserAndJobStateClient ujsClient, String key)
+            throws Exception {
+        try {
+            return ujsClient.getState(SERVICE_NAME, key, 0L);
+        } catch (Exception ex) {
+            if (ex.getMessage().equals("There is no key " + key))
+                return null;
+            throw ex;
+        }
     }
 
     /**
@@ -194,27 +205,26 @@ public class KBaseJobServiceServer extends JsonServerServlet {
         UserAndJobStateClient ujsClient = getUjsClient(authPart);
         String shockNodeId = null;
         try {
-            UObject obj = ujsClient.getState(SERVICE_NAME, "output:" + jobId, 0L);
+            UObject obj = getUjsKeyState(ujsClient, "output:" + jobId);
             if (obj != null)
                 shockNodeId = obj.asScalar();
         } catch (Exception ignore) {}
         if (shockNodeId == null) {
             // We should consult AWE for case the job was killed or gone with no reason.
-            String aweJobId = ujsClient.getState(SERVICE_NAME, "output:" + jobId, 0L).asScalar();
+            String aweJobId = getUjsKeyState(ujsClient, "aweid:" + jobId).asScalar();
             String aweState;
             try {
-                InputStream is = new URL(config.get(CONFIG_PARAM_AWE_URL + "/job/" + aweJobId)).openStream();
+                InputStream is = new URL(config.get(CONFIG_PARAM_AWE_URL) + "/job/" + aweJobId).openStream();
                 ObjectMapper mapper = new ObjectMapper();
                 @SuppressWarnings("unchecked")
                 Map<String, Object> aweJob = mapper.readValue(is, Map.class);
-                System.out.println("AWE job state: " + mapper.writeValueAsString(aweJob));
                 @SuppressWarnings("unchecked")
                 Map<String, Object> data = (Map<String, Object>)aweJob.get("data");
                 aweState = (String)data.get("state");
             } catch (Exception ex) {
                 throw new IllegalStateException("Error checking AWE job for ujs-id=" + jobId + " (" + ex.getMessage() + ")", ex);
             }
-            if ((!aweState.equals("init")) && (!aweState.equals("queuing")) && 
+            if ((!aweState.equals("init")) && (!aweState.equals("queued")) && 
                     (!aweState.equals("in-progress")) && (!aweState.equals("completed"))) {
                 throw new IllegalStateException("Unexpected job state: " + aweState);
             }

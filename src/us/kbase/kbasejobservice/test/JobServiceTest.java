@@ -17,26 +17,30 @@ import java.util.List;
 import java.util.Map;
 import java.util.TreeMap;
 
+import junit.framework.Assert;
+
 import org.eclipse.jetty.server.Server;
 import org.eclipse.jetty.servlet.ServletContextHandler;
 import org.eclipse.jetty.servlet.ServletHolder;
 import org.eclipse.jetty.util.log.Log;
 import org.eclipse.jetty.util.log.Logger;
+import org.junit.AfterClass;
+import org.junit.BeforeClass;
 import org.junit.Test;
 
+import com.fasterxml.jackson.core.JsonProcessingException;
+import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
 
 import us.kbase.auth.AuthException;
 import us.kbase.auth.AuthService;
 import us.kbase.auth.AuthToken;
-import us.kbase.common.awe.AweClient;
-import us.kbase.common.awe.AweResponse;
-import us.kbase.common.awe.AwfEnviron;
-import us.kbase.common.awe.AwfTemplate;
 import us.kbase.common.service.JsonClientCaller;
+import us.kbase.common.service.JsonClientException;
 import us.kbase.common.service.ServerException;
 import us.kbase.common.service.UObject;
 import us.kbase.common.utils.ProcessHelper;
+import us.kbase.kbasejobservice.JobState;
 import us.kbase.kbasejobservice.KBaseJobServiceClient;
 import us.kbase.kbasejobservice.KBaseJobServiceServer;
 import us.kbase.kbasejobservice.RunJobParams;
@@ -45,37 +49,81 @@ import us.kbase.shock.client.ShockNode;
 
 public class JobServiceTest {
     public static final String tempDirName = "temp_test";
+    private static KBaseJobServiceClient client = null;
+    private static File workDir = null;
+    private static File mongoDir = null;
+    private static File shockDir = null;
+    private static File aweServerDir = null;
+    private static File aweClientDir = null;
+    private static File jobServiceDir = null;
+    private static Server jobService = null;
+
+    @BeforeClass
+    public static void beforeClass() throws Exception {
+        workDir = prepareWorkDir("integration");
+        mongoDir = new File(workDir, "mongo");
+        shockDir = new File(workDir, "shock");
+        aweServerDir = new File(workDir, "awe_server");
+        aweClientDir = new File(workDir, "awe_client");
+        jobServiceDir = new File(workDir, "job_service");
+        int mongoPort = startupMongo(System.getProperty("mongod.path"), mongoDir);
+        int shockPort = startupShock(System.getProperty("shock.path"), shockDir, mongoPort);
+        int awePort = startupAweServer(System.getProperty("awe.server.path"), aweServerDir, mongoPort);
+        jobService = startupJobService(jobServiceDir, shockPort, awePort);
+        int jobServicePort = jobService.getConnectors()[0].getLocalPort();
+        startupAweClient(System.getProperty("awe.client.path"), aweClientDir, awePort, jobServiceDir);
+        AuthToken token = getToken();
+        client = new KBaseJobServiceClient(new URL("http://localhost:" + jobServicePort), token);
+        client.setIsInsecureHttpConnectionAllowed(true);
+    }
+    
+    @AfterClass
+    public static void afterClass() throws Exception {
+        if (jobService != null) {
+            try {
+                jobService.stop();
+                System.out.println(jobServiceDir.getName() + " was stopped");
+            } catch (Exception ignore) {}
+        }
+        killPid(aweClientDir);
+        killPid(aweServerDir);
+        killPid(shockDir);
+        killPid(mongoDir);
+    }
 
     @Test
-    public void complexTest() throws Exception {
-        File workDir = prepareWorkDir("shock");
-        File mongoDir = new File(workDir, "mongo");
-        File shockDir = new File(workDir, "shock");
-        File aweServerDir = new File(workDir, "awe_server");
-        File jobServiceDir = new File(workDir, "job_service");
-        Server jobService = null;
+    public void testGoodCall() throws Exception {
+        String jobId = client.runJob(new RunJobParams().withMethod("SmallTest.parseInt").withParams(Arrays.asList(new UObject("123"))));
+        List<Integer> results = waitForJob(client, jobId, new TypeReference<List<Integer>>() {});
+        Assert.assertEquals(123, (int)results.get(0));
+    }
+
+    @Test
+    public void testBadCall() throws Exception {
+        String notNumber = "abc_xyz";
+        String jobId = client.runJob(new RunJobParams().withMethod("SmallTest.parseInt").withParams(Arrays.asList(new UObject(notNumber))));
         try {
-            int mongoPort = startupMongo(System.getProperty("mongod.path"), mongoDir);
-            int shockPort = startupShock(System.getProperty("shock.path"), shockDir, mongoPort);
-            int awePort = startupAweServer(System.getProperty("awe.server.path"), aweServerDir, mongoPort);
-            jobService = startupJobService(jobServiceDir, shockPort, awePort);
-            int jobServicePort = jobService.getConnectors()[0].getLocalPort();
-            AuthToken token = getToken();
-            KBaseJobServiceClient client = new KBaseJobServiceClient(new URL("http://localhost:" + jobServicePort), token);
-            client.setIsInsecureHttpConnectionAllowed(true);
-            String jobId = client.runJob(new RunJobParams().withMethod("SmallTest.parseInt").withParams(Arrays.asList(new UObject("123"))));
-            System.out.println("Job id=" + jobId);
-        } finally {
-            if (jobService != null) {
-                try {
-                    jobService.stop();
-                    System.out.println(jobServiceDir.getName() + " was stopped");
-                } catch (Exception ignore) {}
-            }
-            killPid(aweServerDir);
-            killPid(shockDir);
-            killPid(mongoDir);
+            waitForJob(client, jobId, new TypeReference<List<Integer>>() {});
+            Assert.fail("Method is expected to produce an error");
+        } catch (Exception ex) {
+            Assert.assertTrue(ex.getMessage(), ex.getMessage().contains("NumberFormatException") &&
+                    ex.getMessage().contains(notNumber));
         }
+    }
+
+    private <T> T waitForJob(KBaseJobServiceClient client, String jobId, TypeReference<T> retType)
+            throws InterruptedException, IOException, JsonClientException,
+            JsonProcessingException {
+        for (int i = 0; i < 30; i++) {
+            Thread.sleep(1000);
+            JobState jobState = client.checkJob(jobId);
+            if (jobState.getFinished() == 1L) {
+                if (jobState.getError() != null)
+                    throw new IllegalStateException("Job error: " + UObject.getMapper().writeValueAsString(jobState.getError()));
+                return jobState.getResult().asClassInstance(retType);
+            }
+        }
+        throw new IllegalStateException("Job wasn't finished in 30 seconds");
     }
 
     private static AuthToken getToken() throws AuthException, IOException {
@@ -85,37 +133,6 @@ public class JobServiceTest {
             throw new IllegalStateException("Both test.user and test.pwd system properties should be set");
         AuthToken token = AuthService.login(user, password).getToken();
         return token;
-    }
-    
-    private static void runJob(int awePort) throws Exception {
-        AweClient client = new AweClient("http://localhost:" + awePort + "/");
-        AwfTemplate job = AweClient.createSimpleJobTemplate("job_service", "KBaseTrees.construct_species_tree", "-h", "module_builder");
-        AwfEnviron env = new AwfEnviron();
-        env.getPrivate().put("KB_AUTH_TOKEN", "secret1");
-        job.getTasks().get(0).getCmd().setEnviron(env);
-        AweResponse resp = client.submitJob(job);
-        System.out.println(new ObjectMapper().writeValueAsString(resp));
-        String jobId = resp.getData().getId();
-        System.out.println(jobId);
-        while (true) {
-            Thread.sleep(1000);
-            AweResponse resp2 = checkJob(awePort, jobId);
-            String state = resp2.getData().getState();
-            if ((!state.equals("queuing")) && (!state.equals("in-progress")))
-                break;
-        }
-    }
-
-    private static AweResponse checkJob(int awePort, String jobId) throws IOException {
-        InputStream is = new URL("http://localhost:" + awePort + "/job/" + jobId).openStream();
-        ObjectMapper mapper = new ObjectMapper();
-        Map<String, Object> ret = mapper.readValue(is, Map.class);
-        Map<String, Object> data = (Map<String, Object>)ret.get("data");
-        List<Map<String, Object>> tasks = (List<Map<String, Object>>)data.get("tasks");
-        tasks.get(0).put("predata", null);
-        String retText = new ObjectMapper().writeValueAsString(ret);
-        System.out.println(retText);
-        return mapper.readValue(retText, AweResponse.class);
     }
     
     private static int startupMongo(String mongodExePath, File dir) throws Exception {
@@ -301,6 +318,7 @@ public class JobServiceTest {
             try {
                 InputStream is = new URL("http://localhost:" + port + "/job/").openStream();
                 ObjectMapper mapper = new ObjectMapper();
+                @SuppressWarnings("unchecked")
                 Map<String, Object> ret = mapper.readValue(is, Map.class);
                 if (ret.containsKey("limit") && ret.containsKey("total_count")) {
                     err = null;
@@ -323,7 +341,81 @@ public class JobServiceTest {
         System.out.println(dir.getName() + " was started up");
         return port;
     }
-    
+
+    @SuppressWarnings("unchecked")
+    private static int startupAweClient(String aweClientExePath, File dir, int aweServerPort, 
+            File jobServiceDir) throws Exception {
+        if (aweClientExePath == null)
+            aweClientExePath = "awe-client";
+        if (!dir.exists())
+            dir.mkdirs();
+        File dataDir = new File(dir, "data");
+        dataDir.mkdir();
+        File logsDir = new File(dir, "logs");
+        logsDir.mkdir();
+        File workDir = new File(dir, "work");
+        workDir.mkdir();
+        int port = findFreePort();
+        File configFile = new File(dir, "awec.cfg");
+        writeFileLines(Arrays.asList(
+                "[Directories]",
+                "data=" + dataDir.getAbsolutePath(),
+                "logs=" + logsDir.getAbsolutePath(),
+                "[Args]",
+                "debuglevel=0",
+                "[Client]",
+                "workpath=" + workDir.getAbsolutePath(),
+                "supported_apps=" + KBaseJobServiceServer.AWE_CLIENT_SCRIPT_NAME,
+                "serverurl=http://localhost:" + aweServerPort + "/",
+                "group=kbase",
+                "name=kbase-client",
+                "auto_clean_dir=false",
+                "worker_overlap=false",
+                "print_app_msg=true",
+                "clientgroup_token=",
+                "pre_work_script=",
+                "pre_work_script_args="
+                ), configFile);
+        File scriptFile = new File(dir, "start_awe_client.sh");
+        writeFileLines(Arrays.asList(
+                "#!/bin/bash",
+                "cd " + dir.getAbsolutePath(),
+                "export PATH=" + jobServiceDir.getAbsolutePath() + ":$PATH",
+                "job_service_run_task.sh >1.out 2>1.err",
+                aweClientExePath + " --conf " + configFile.getAbsolutePath() + " >out.txt 2>err.txt & pid=$!",
+                "echo $pid > pid.txt"
+                ), scriptFile);
+        ProcessHelper.cmd("bash", scriptFile.getCanonicalPath()).exec(dir);
+        Exception err = null;
+        for (int n = 0; n < 10; n++) {
+            Thread.sleep(1000);
+            try {
+                InputStream is = new URL("http://localhost:" + aweServerPort + "/client/").openStream();
+                ObjectMapper mapper = new ObjectMapper();
+                Map<String, Object> ret = mapper.readValue(is, Map.class);
+                if (ret.containsKey("data") && 
+                        ((List<Object>)ret.get("data")).size() > 0) {
+                    err = null;
+                    break;
+                } else {
+                    err = new Exception("AWE client response doesn't match expected data: " + 
+                            mapper.writeValueAsString(ret));
+                }
+            } catch (Exception ex) {
+                err = ex;
+            }
+        }
+        if (err != null) {
+            File errorFile = new File(new File(logsDir, "client"), "error.log");
+            if (errorFile.exists())
+                for (String l : readFileLines(errorFile))
+                    System.err.println("AWE client error: " + l);
+            throw new IllegalStateException("AWE client couldn't startup in 10 seconds (" + err.getMessage() + ")", err);
+        }
+        System.out.println(dir.getName() + " was started up");
+        return port;
+    }
+
     private static Server startupJobService(File dir, int shockPort, int awePort) throws Exception {
         Log.setLog(new Logger() {
             @Override
@@ -379,12 +471,14 @@ public class JobServiceTest {
                     " us.kbase.kbasejobservice.KBaseJobServiceScript \"" + configFile.getAbsolutePath() + "\" " +
                     "$1 \"$KB_AUTH_TOKEN\""
                 ), jobServiceCLI);
+        ProcessHelper.cmd("chmod", "a+x", jobServiceCLI.getAbsolutePath()).exec(dir);
         File smallTestCLI = new File(dir, "run_SmallTest_async_job.sh");
         writeFileLines(Arrays.asList(
                 "#!/bin/bash",
                 "java -cp " + System.getProperty("java.class.path") + " " +
                 	"us.kbase.kbasejobservice.test.SmallTestServer $1 $2 $3 >smalltest.out 2> smalltest.err"
                 ), smallTestCLI);
+        ProcessHelper.cmd("chmod", "a+x", smallTestCLI.getAbsolutePath()).exec(dir);
         System.setProperty("KB_DEPLOYMENT_CONFIG", configFile.getAbsolutePath());
         Server jettyServer = new Server(port);
         ServletContextHandler context = new ServletContextHandler(ServletContextHandler.SESSIONS);
@@ -416,6 +510,8 @@ public class JobServiceTest {
     }
 
     private static void killPid(File dir) {
+        if (dir == null)
+            return;
         try {
             File pidFile = new File(dir, "pid.txt");
             if (pidFile.exists()) {

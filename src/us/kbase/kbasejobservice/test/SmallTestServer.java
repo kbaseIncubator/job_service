@@ -8,6 +8,7 @@ import java.io.PrintWriter;
 import java.io.StringWriter;
 import java.util.Arrays;
 import java.util.LinkedHashMap;
+import java.util.List;
 import java.util.Map;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -31,10 +32,11 @@ public class SmallTestServer {
         ObjectMapper mapper = UObject.getMapper();
         try {
             os = new FileOutputStream(output);
-            RpcCallData rpcCallData = mapper.readValue(input, RpcCallData.class);
-            if (!rpcCallData.getMethod().equals("SmallTest.parseInt"))
-                throw new IllegalStateException("Method is not supported: " + rpcCallData.getMethod());
-            String param = rpcCallData.getParams().get(0).asScalar();
+            Map<String, Object> rpcCallData = mapper.readValue(input, Map.class);
+            String method = (String)rpcCallData.get("method");
+            if (!method.equals("SmallTest.parseInt"))
+                throw new IllegalStateException("Method is not supported: " + method);
+            String param = (String)((List<Object>)rpcCallData.get("params")).get(0);
             int ret = Integer.parseInt(param);
             Map<String, Object> resp = new LinkedHashMap<String, Object>();
             resp.put("version", "1.1");

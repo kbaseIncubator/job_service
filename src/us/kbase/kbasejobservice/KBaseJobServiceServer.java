@@ -119,7 +119,6 @@ public class KBaseJobServiceServer extends JsonServerServlet {
         env.getPrivate().put("KB_AUTH_TOKEN", authPart.toString());
         job.getTasks().get(0).getCmd().setEnviron(env);
         AweResponse resp = client.submitJob(job);
-        System.out.println(new ObjectMapper().writeValueAsString(resp));
         String aweJobId = resp.getData().getId();
         ujsClient.setState(SERVICE_NAME, "aweid:" + jobId, new UObject(aweJobId));
         returnVal = jobId;
@@ -215,8 +214,8 @@ public class KBaseJobServiceServer extends JsonServerServlet {
             } catch (Exception ex) {
                 throw new IllegalStateException("Error checking AWE job for ujs-id=" + jobId + " (" + ex.getMessage() + ")", ex);
             }
-            if ((!aweState.equals("queuing")) && (!aweState.equals("in-progress")) && 
-                    (!aweState.equals("completed"))) {
+            if ((!aweState.equals("init")) && (!aweState.equals("queuing")) && 
+                    (!aweState.equals("in-progress")) && (!aweState.equals("completed"))) {
                 throw new IllegalStateException("Unexpected job state: " + aweState);
             }
             returnVal.setFinished(0L);

@@ -17,15 +17,29 @@ import java.util.List;
 import java.util.Map;
 import java.util.TreeMap;
 
+import org.eclipse.jetty.server.Server;
+import org.eclipse.jetty.servlet.ServletContextHandler;
+import org.eclipse.jetty.servlet.ServletHolder;
+import org.eclipse.jetty.util.log.Log;
+import org.eclipse.jetty.util.log.Logger;
 import org.junit.Test;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
 
+import us.kbase.auth.AuthException;
+import us.kbase.auth.AuthService;
+import us.kbase.auth.AuthToken;
 import us.kbase.common.awe.AweClient;
 import us.kbase.common.awe.AweResponse;
 import us.kbase.common.awe.AwfEnviron;
 import us.kbase.common.awe.AwfTemplate;
+import us.kbase.common.service.JsonClientCaller;
+import us.kbase.common.service.ServerException;
+import us.kbase.common.service.UObject;
 import us.kbase.common.utils.ProcessHelper;
+import us.kbase.kbasejobservice.KBaseJobServiceClient;
+import us.kbase.kbasejobservice.KBaseJobServiceServer;
+import us.kbase.kbasejobservice.RunJobParams;
 import us.kbase.shock.client.BasicShockClient;
 import us.kbase.shock.client.ShockNode;
 
@@ -34,23 +48,43 @@ public class JobServiceTest {
 
     @Test
     public void complexTest() throws Exception {
-        testShock();
-    }
-    
-    private static void testShock() throws Exception {
         File workDir = prepareWorkDir("shock");
         File mongoDir = new File(workDir, "mongo");
         File shockDir = new File(workDir, "shock");
         File aweServerDir = new File(workDir, "awe_server");
+        File jobServiceDir = new File(workDir, "job_service");
+        Server jobService = null;
         try {
             int mongoPort = startupMongo(System.getProperty("mongod.path"), mongoDir);
-            startupShock(System.getProperty("shock.path"), shockDir, mongoPort);
-            startupAweServer(System.getProperty("awe.server.path"), aweServerDir, mongoPort);
+            int shockPort = startupShock(System.getProperty("shock.path"), shockDir, mongoPort);
+            int awePort = startupAweServer(System.getProperty("awe.server.path"), aweServerDir, mongoPort);
+            jobService = startupJobService(jobServiceDir, shockPort, awePort);
+            int jobServicePort = jobService.getConnectors()[0].getLocalPort();
+            AuthToken token = getToken();
+            KBaseJobServiceClient client = new KBaseJobServiceClient(new URL("http://localhost:" + jobServicePort), token);
+            client.setIsInsecureHttpConnectionAllowed(true);
+            String jobId = client.runJob(new RunJobParams().withMethod("SmallTest.parseInt").withParams(Arrays.asList(new UObject("123"))));
+            System.out.println("Job id=" + jobId);
         } finally {
+            if (jobService != null) {
+                try {
+                    jobService.stop();
+                    System.out.println(jobServiceDir.getName() + " was stopped");
+                } catch (Exception ignore) {}
+            }
             killPid(aweServerDir);
             killPid(shockDir);
             killPid(mongoDir);
         }
+    }
+
+    private static AuthToken getToken() throws AuthException, IOException {
+        String user = System.getProperty("test.user");
+        String password = System.getProperty("test.pwd");
+        if (user == null || password == null)
+            throw new IllegalStateException("Both test.user and test.pwd system properties should be set");
+        AuthToken token = AuthService.login(user, password).getToken();
+        return token;
     }
     
     private static void runJob(int awePort) throws Exception {
@@ -288,6 +322,97 @@ public class JobServiceTest {
         }
         System.out.println(dir.getName() + " was started up");
         return port;
+    }
+    
+    private static Server startupJobService(File dir, int shockPort, int awePort) throws Exception {
+        Log.setLog(new Logger() {
+            @Override
+            public void warn(String arg0, Object arg1, Object arg2) {}
+            @Override
+            public void warn(String arg0, Throwable arg1) {}
+            @Override
+            public void warn(String arg0) {}
+            @Override
+            public void setDebugEnabled(boolean arg0) {}
+            @Override
+            public boolean isDebugEnabled() {
+                return false;
+            }
+            @Override
+            public void info(String arg0, Object arg1, Object arg2) {}
+            @Override
+            public void info(String arg0) {}
+            @Override
+            public String getName() {
+                return null;
+            }
+            @Override
+            public Logger getLogger(String arg0) {
+                return this;
+            }
+            @Override
+            public void debug(String arg0, Object arg1, Object arg2) {}
+            @Override
+            public void debug(String arg0, Throwable arg1) {}
+            @Override
+            public void debug(String arg0) {}
+        });
+        if (!dir.exists())
+            dir.mkdirs();
+        File configFile = new File(dir, "deploy.cfg");
+        int port = findFreePort();
+        writeFileLines(Arrays.asList(
+                "[KBaseJobService]",
+                "scratch=" + dir.getAbsolutePath(),
+                "ujs.url=http://ci.kbase.us/services/userandjobstate",
+                "shock.url=http://localhost:" + shockPort + "/",
+                "awe.url=http://localhost:" + awePort + "/",
+                "client.job.service.url=http://localhost:" + port + "/",
+                "client.use.scratch.for.jobs=false",
+                "client.bin.dir=" + dir.getAbsolutePath()
+                ), configFile);
+        File jobServiceCLI = new File(dir, KBaseJobServiceServer.AWE_CLIENT_SCRIPT_NAME);
+        writeFileLines(Arrays.asList(
+                "#!/bin/bash",
+                "echo \"$KB_AUTH_TOKEN\"",
+                "java -cp " + System.getProperty("java.class.path") + 
+                    " us.kbase.kbasejobservice.KBaseJobServiceScript \"" + configFile.getAbsolutePath() + "\" " +
+                    "$1 \"$KB_AUTH_TOKEN\""
+                ), jobServiceCLI);
+        File smallTestCLI = new File(dir, "run_SmallTest_async_job.sh");
+        writeFileLines(Arrays.asList(
+                "#!/bin/bash",
+                "java -cp " + System.getProperty("java.class.path") + " " +
+                	"us.kbase.kbasejobservice.test.SmallTestServer $1 $2 $3 >smalltest.out 2> smalltest.err"
+                ), smallTestCLI);
+        System.setProperty("KB_DEPLOYMENT_CONFIG", configFile.getAbsolutePath());
+        Server jettyServer = new Server(port);
+        ServletContextHandler context = new ServletContextHandler(ServletContextHandler.SESSIONS);
+        context.setContextPath("/");
+        jettyServer.setHandler(context);
+        context.addServlet(new ServletHolder(new KBaseJobServiceServer()),"/*");
+        jettyServer.start();
+        Exception err = null;
+        JsonClientCaller caller = new JsonClientCaller(new URL("http://localhost:" + port + "/"));
+        for (int n = 0; n < 10; n++) {
+            Thread.sleep(1000);
+            try {
+                caller.jsonrpcCall("Unknown", new ArrayList<String>(), null, false, false);
+            } catch (ServerException ex) {
+                if (ex.getMessage().contains("Can not find method [Unknown] in server class")) {
+                    err = null;
+                    break;
+                } else {
+                    err = ex;
+                }
+            } catch (Exception ex) {
+                err = ex;
+            }
+        }
+        if (err != null)
+            throw new IllegalStateException("Job service couldn't startup in 10 seconds (" + err.getMessage() + ")", err);
+        System.out.println(dir.getName() + " was started up");
+        return jettyServer;
     }
 
     private static void killPid(File dir) {

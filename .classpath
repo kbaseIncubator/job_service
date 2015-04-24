@@ -13,6 +13,10 @@
 	<classpathentry kind="lib" path="../jars/lib/jars/kbase/common/kbase-common-0.0.10.jar"/>
 	<classpathentry kind="lib" path="../jars/lib/jars/servlet/servlet-api-2.5.jar"/>
 	<classpathentry kind="lib" path="../jars/lib/jars/syslog4j/syslog4j-0.9.46.jar"/>
-	<classpathentry kind="lib" path="../jars/lib/jars/kbase/shock/shock-client-0.0.6.jar"/>
+	<classpathentry kind="lib" path="../jars/lib/jars/kbase/shock/shock-client-0.0.8.jar"/>
+	<classpathentry kind="lib" path="../jars/lib/jars/apache_commons/http/httpclient-4.3.1.jar"/>
+	<classpathentry kind="lib" path="../jars/lib/jars/apache_commons/http/httpcore-4.3.jar"/>
+	<classpathentry kind="lib" path="../jars/lib/jars/apache_commons/commons-logging-1.1.1.jar"/>
+	<classpathentry kind="lib" path="../jars/lib/jars/apache_commons/http/httpmime-4.3.1.jar"/>
 	<classpathentry kind="output" path="bin"/>
 </classpath>

@@ -1,21 +1,32 @@
 package us.kbase.kbasejobservice;
 
-import java.io.File;
 import us.kbase.auth.AuthToken;
 import us.kbase.common.service.JsonServerMethod;
 import us.kbase.common.service.JsonServerServlet;
 
 //BEGIN_HEADER
 
-import java.util.ArrayList;
-import java.util.Date;
-import java.util.LinkedHashMap;
+import java.io.ByteArrayInputStream;
+import java.io.ByteArrayOutputStream;
+import java.io.InputStream;
+import java.net.URL;
+import java.util.Arrays;
 import java.util.Map;
 
+import com.fasterxml.jackson.databind.ObjectMapper;
+
+import us.kbase.common.awe.AweClient;
+import us.kbase.common.awe.AweResponse;
+import us.kbase.common.awe.AwfEnviron;
+import us.kbase.common.awe.AwfTemplate;
 import us.kbase.common.service.UObject;
-import us.kbase.common.utils.UTCDateFormat;
-import us.kbase.common.utils.ProcessHelper;
-import us.kbase.common.utils.ProcessHelper.CommandHolder;
+import us.kbase.shock.client.BasicShockClient;
+import us.kbase.shock.client.ShockNode;
+import us.kbase.shock.client.ShockNodeId;
+import us.kbase.userandjobstate.InitProgress;
+import us.kbase.userandjobstate.Results;
+import us.kbase.userandjobstate.UserAndJobStateClient;
+
 //END_HEADER
 
 /**
@@ -27,41 +38,57 @@ public class KBaseJobServiceServer extends JsonServerServlet {
     private static final long serialVersionUID = 1L;
 
     //BEGIN_CLASS_HEADER
-    private int lastJobId = 0;
-    private Map<String, FinishJobParams> results = new LinkedHashMap<String, FinishJobParams>();
-    private File binDir = null;
-    private File tempDir = null;
+    public static final String SERVICE_NAME = "KBaseJobService";
+    public static final String CONFIG_PARAM_SCRATCH = "scratch";
+    public static final String CONFIG_PARAM_UJS_URL = "ujs.url";
+    public static final String CONFIG_PARAM_SHOCK_URL = "shock.url";
+    public static final String CONFIG_PARAM_AWE_URL = "awe.url";
+    public static final String CONFIG_PARAM_MAX_JOB_SIZE = "max.job.size";
+    public static final String CONFIG_PARAM_CLIENT_JOB_SERVICE_URL = "client.job.service.url";
+    public static final String CONFIG_PARAM_CLIENT_USE_SCRATCH_FOR_JOBS = "client.use.scratch.for.jobs";
+    public static final String CONFIG_PARAM_CLIENT_BIN_DIR = "client.bin.dir";
+    public static final String AWE_CLIENT_SCRIPT_NAME = "job_service_run_task.sh";
     
-    public KBaseJobServiceServer withBinDir(File binDir) {
-        this.binDir = binDir;
-        return this;
+    private UserAndJobStateClient getUjsClient(AuthToken auth) throws Exception {
+        String ujsUrl = config.get(CONFIG_PARAM_UJS_URL);
+        if (ujsUrl == null)
+            throw new IllegalStateException("Parameter '" + CONFIG_PARAM_UJS_URL +
+                    "' is not defined in configuration");
+        UserAndJobStateClient ret = new UserAndJobStateClient(new URL(ujsUrl), auth);
+        ret.setIsInsecureHttpConnectionAllowed(true);
+        return ret;
+    }
+
+    private BasicShockClient getShockClient(AuthToken auth) throws Exception {
+        String shockUrl = config.get(CONFIG_PARAM_SHOCK_URL);
+        if (shockUrl == null)
+            throw new IllegalStateException("Parameter '" + CONFIG_PARAM_SHOCK_URL +
+                    "' is not defined in configuration");
+        BasicShockClient ret = new BasicShockClient(new URL(shockUrl), auth);
+        return ret;
+    }
+
+    private AweClient getAweClient(AuthToken auth) throws Exception {
+        String aweUrl = config.get(CONFIG_PARAM_AWE_URL);
+        if (aweUrl == null)
+            throw new IllegalStateException("Parameter '" + CONFIG_PARAM_AWE_URL +
+                    "' is not defined in configuration");
+        AweClient ret = new AweClient(aweUrl);
+        return ret;
     }
     
-    public KBaseJobServiceServer withTempDir(File tempDir) {
-        this.tempDir = tempDir;
-        return this;
-    }
-    
-    public File getTempDir() {
-        return tempDir == null ? new File(".") : tempDir;
-    }
-    
-    public String getBinScript(String scriptName) {
-        File ret = null;
-        if (binDir == null) {
-            ret = new File(".", scriptName);
-            if (!ret.exists())
-                return scriptName;
-        } else {
-            ret = new File(binDir, scriptName);
-        }
-        return ret.getAbsolutePath();
+    private long getMaxJobSize() {
+        String ret = config.get(CONFIG_PARAM_MAX_JOB_SIZE);
+        if (ret == null)
+            return 1000000L;
+        return Long.parseLong(ret);
     }
     //END_CLASS_HEADER
 
     public KBaseJobServiceServer() throws Exception {
         super("KBaseJobService");
         //BEGIN_CONSTRUCTOR
+        setMaxRPCPackageSize(getMaxJobSize());
         //END_CONSTRUCTOR
     }
 
@@ -77,54 +104,25 @@ public class KBaseJobServiceServer extends JsonServerServlet {
     public String runJob(RunJobParams params, AuthToken authPart) throws Exception {
         String returnVal = null;
         //BEGIN run_job
-        lastJobId++;
-        final String jobId = "" + lastJobId;
-        final String token = authPart.toString();
+        ByteArrayOutputStream baos = new ByteArrayOutputStream();
+        UObject.getMapper().writeValue(baos, params);
+        ByteArrayInputStream bais = new ByteArrayInputStream(baos.toByteArray());
+        BasicShockClient shockClient = getShockClient(authPart);
+        ShockNode shockNode = shockClient.addNode(bais, "job.json", "json");
+        UserAndJobStateClient ujsClient = getUjsClient(authPart);
+        final String jobId = ujsClient.createAndStartJob(authPart.toString(), "queued", 
+                "Automated job for " + params.getMethod(), new InitProgress().withPtype("none"), null);
+        ujsClient.setState(SERVICE_NAME, "input:" + jobId, new UObject(shockNode.getId().getId()));
+        AweClient client = getAweClient(authPart);
+        AwfTemplate job = AweClient.createSimpleJobTemplate(SERVICE_NAME, params.getMethod(), jobId, AWE_CLIENT_SCRIPT_NAME);
+        AwfEnviron env = new AwfEnviron();
+        env.getPrivate().put("KB_AUTH_TOKEN", authPart.toString());
+        job.getTasks().get(0).getCmd().setEnviron(env);
+        AweResponse resp = client.submitJob(job);
+        System.out.println(new ObjectMapper().writeValueAsString(resp));
+        String aweJobId = resp.getData().getId();
+        ujsClient.setState(SERVICE_NAME, "aweid:" + jobId, new UObject(aweJobId));
         returnVal = jobId;
-        final File jobDir = new File(tempDir, "job_" + jobId);
-        if (!jobDir.exists())
-            jobDir.mkdirs();
-        File jobFile = new File(jobDir, "job.json");
-        UObject.getMapper().writeValue(jobFile, params);
-        new Thread(new Runnable() {
-            @Override
-            public void run() {
-                try {
-                    RunJobParams job = getJobParams(jobId, new AuthToken(token));
-                    String serviceName = job.getMethod().split("\\.")[0];
-                    RpcContext context = job.getRpcContext();
-                    if (context == null)
-                        context = new RpcContext().withRunId("");
-                    if (context.getCallStack() == null)
-                        context.setCallStack(new ArrayList<MethodCall>());
-                    context.getCallStack().add(new MethodCall().withJobId(jobId).withMethod(job.getMethod())
-                            .withTime(new UTCDateFormat().formatDate(new Date())));
-                    File jobDir = new File(tempDir, "job_" + jobId);
-                    if (!jobDir.exists())
-                        jobDir.mkdirs();
-                    Map<String, Object> rpc = new LinkedHashMap<String, Object>();
-                    rpc.put("version", "1.1");
-                    rpc.put("method", job.getMethod());
-                    rpc.put("params", job.getParams());
-                    rpc.put("context", job.getRpcContext());
-                    File inputFile = new File(jobDir, "input.json");
-                    UObject.getMapper().writeValue(inputFile, rpc);
-                    String scriptFilePath = getBinScript("run_" + serviceName + "_async_job.sh");
-                    File outputFile = new File(jobDir, "output.json");
-                    CommandHolder ch = ProcessHelper.cmd("bash", scriptFilePath, inputFile.getCanonicalPath(),
-                            outputFile.getCanonicalPath(), token);
-                    ch.exec(jobDir);
-                    FinishJobParams result = UObject.getMapper().readValue(outputFile, FinishJobParams.class);
-                    finishJob(jobId, result, new AuthToken(token));
-                } catch (Exception ex) {
-                    FinishJobParams result = new FinishJobParams().withError(new JsonRpcError().withCode(-1L)
-                            .withName("JSONRPCError").withMessage("Job service side error: " + ex.getMessage()));
-                    try {
-                        finishJob(jobId, result, new AuthToken(token));
-                    } catch (Exception ignore) {}
-                }
-            }
-        }).start();
         //END run_job
         return returnVal;
     }
@@ -141,11 +139,14 @@ public class KBaseJobServiceServer extends JsonServerServlet {
     public RunJobParams getJobParams(String jobId, AuthToken authPart) throws Exception {
         RunJobParams returnVal = null;
         //BEGIN get_job_params
-        final File jobDir = new File(tempDir, "job_" + jobId);
-        if (!jobDir.exists())
-            jobDir.mkdirs();
-        File jobFile = new File(jobDir, "job.json");
-        returnVal = UObject.getMapper().readValue(jobFile, RunJobParams.class);
+        UserAndJobStateClient ujsClient = getUjsClient(authPart);
+        String shockNodeId = ujsClient.getState(SERVICE_NAME, "input:" + jobId, 0L).asScalar();
+        BasicShockClient shockClient = getShockClient(authPart);
+        ByteArrayOutputStream baos = new ByteArrayOutputStream();
+        shockClient.getFile(new ShockNodeId(shockNodeId), baos);
+        baos.close();
+        returnVal = UObject.getMapper().readValue(
+                new ByteArrayInputStream(baos.toByteArray()), RunJobParams.class);
         //END get_job_params
         return returnVal;
     }
@@ -161,7 +162,20 @@ public class KBaseJobServiceServer extends JsonServerServlet {
     @JsonServerMethod(rpc = "KBaseJobService.finish_job")
     public void finishJob(String jobId, FinishJobParams params, AuthToken authPart) throws Exception {
         //BEGIN finish_job
-        results.put(jobId, params);
+        ByteArrayOutputStream baos = new ByteArrayOutputStream();
+        UObject.getMapper().writeValue(baos, params);
+        ByteArrayInputStream bais = new ByteArrayInputStream(baos.toByteArray());
+        BasicShockClient shockClient = getShockClient(authPart);
+        ShockNode shockNode = shockClient.addNode(bais, "job.json", "json");
+        UserAndJobStateClient ujsClient = getUjsClient(authPart);
+        ujsClient.setState(SERVICE_NAME, "output:" + jobId, new UObject(shockNode.getId().getId()));
+        if (params.getError() == null) {
+            ujsClient.completeJob(jobId, authPart.toString(), "done", null, 
+                    new Results().withShockurl(config.get(CONFIG_PARAM_SHOCK_URL))
+                    .withShocknodes(Arrays.asList(shockNode.getId().getId())));
+        } else {
+            ujsClient.completeJob(jobId, authPart.toString(), params.getError().getMessage(), params.getError().getError(), null);
+        }
         //END finish_job
     }
 
@@ -178,10 +192,41 @@ public class KBaseJobServiceServer extends JsonServerServlet {
         JobState returnVal = null;
         //BEGIN check_job
         returnVal = new JobState();
-        FinishJobParams result = results.get(jobId);
-        if (result == null) {
+        UserAndJobStateClient ujsClient = getUjsClient(authPart);
+        String shockNodeId = null;
+        try {
+            UObject obj = ujsClient.getState(SERVICE_NAME, "output:" + jobId, 0L);
+            if (obj != null)
+                shockNodeId = obj.asScalar();
+        } catch (Exception ignore) {}
+        if (shockNodeId == null) {
+            // We should consult AWE for case the job was killed or gone with no reason.
+            String aweJobId = ujsClient.getState(SERVICE_NAME, "output:" + jobId, 0L).asScalar();
+            String aweState;
+            try {
+                InputStream is = new URL(config.get(CONFIG_PARAM_AWE_URL + "/job/" + aweJobId)).openStream();
+                ObjectMapper mapper = new ObjectMapper();
+                @SuppressWarnings("unchecked")
+                Map<String, Object> aweJob = mapper.readValue(is, Map.class);
+                System.out.println("AWE job state: " + mapper.writeValueAsString(aweJob));
+                @SuppressWarnings("unchecked")
+                Map<String, Object> data = (Map<String, Object>)aweJob.get("data");
+                aweState = (String)data.get("state");
+            } catch (Exception ex) {
+                throw new IllegalStateException("Error checking AWE job for ujs-id=" + jobId + " (" + ex.getMessage() + ")", ex);
+            }
+            if ((!aweState.equals("queuing")) && (!aweState.equals("in-progress")) && 
+                    (!aweState.equals("completed"))) {
+                throw new IllegalStateException("Unexpected job state: " + aweState);
+            }
             returnVal.setFinished(0L);
         } else {
+            BasicShockClient shockClient = getShockClient(authPart);
+            ByteArrayOutputStream baos = new ByteArrayOutputStream();
+            shockClient.getFile(new ShockNodeId(shockNodeId), baos);
+            baos.close();
+            FinishJobParams result = UObject.getMapper().readValue(
+                    new ByteArrayInputStream(baos.toByteArray()), FinishJobParams.class);
             returnVal.setFinished(1L);
             returnVal.setResult(result.getResult());
             returnVal.setError(result.getError());

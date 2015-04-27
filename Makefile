@@ -60,7 +60,7 @@ deploy-docs:
 	@echo "No documentation"
 	
 deploy-worker:
-	ant -Djarsdir=$(JARS_DIR) -Djarslibdir=$(JARS_LIB_DIR) -Dservicedir=$(SERVICE_DIR) script
+	ant -Djarsdir=$(JARS_LIB_DIR) -Djarslibdir=$(JARS_LIB_DIR) -Dservicedir=$(SERVICE_DIR) script
 	cp -f ./dist/job_service_run_task.sh $(TARGET)/bin
 
 clean:

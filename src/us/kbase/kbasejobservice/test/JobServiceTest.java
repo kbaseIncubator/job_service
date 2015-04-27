@@ -161,7 +161,8 @@ public class JobServiceTest {
                 ), scriptFile);
         ProcessHelper.cmd("bash", scriptFile.getCanonicalPath()).exec(dir);
         boolean ready = false;
-        for (int n = 0; n < 10; n++) {
+        int waitSec = 30;
+        for (int n = 0; n < waitSec; n++) {
             Thread.sleep(1000);
             if (logFile.exists()) {
                 if (grep(readFileLines(logFile), "waiting for connections on port " + port).size() > 0) {
@@ -174,7 +175,7 @@ public class JobServiceTest {
             if (logFile.exists())
                 for (String l : readFileLines(logFile))
                     System.err.println("MongoDB log: " + l);
-            throw new IllegalStateException("MongoDB couldn't startup in 10 seconds");
+            throw new IllegalStateException("MongoDB couldn't startup in " + waitSec + " seconds");
         }
         System.out.println(dir.getName() + " was started up");
         return port;
@@ -225,7 +226,8 @@ public class JobServiceTest {
                 ), scriptFile);
         ProcessHelper.cmd("bash", scriptFile.getCanonicalPath()).exec(dir);
         Exception err = null;
-        for (int n = 0; n < 10; n++) {
+        int waitSec = 30;
+        for (int n = 0; n < waitSec; n++) {
             Thread.sleep(1000);
             try {
                 BasicShockClient client = new BasicShockClient(new URL("http://localhost:" + port));
@@ -252,7 +254,7 @@ public class JobServiceTest {
             if (errorFile.exists())
                 for (String l : readFileLines(errorFile))
                     System.err.println("Shock error: " + l);
-            throw new IllegalStateException("Shock couldn't startup in 10 seconds (" + err.getMessage() + ")", err);
+            throw new IllegalStateException("Shock couldn't startup in " + waitSec + " seconds (" + err.getMessage() + ")", err);
         }
         System.out.println(dir.getName() + " was started up");
         return port;
@@ -313,7 +315,8 @@ public class JobServiceTest {
                 ), scriptFile);
         ProcessHelper.cmd("bash", scriptFile.getCanonicalPath()).exec(dir);
         Exception err = null;
-        for (int n = 0; n < 10; n++) {
+        int waitSec = 30;
+        for (int n = 0; n < waitSec; n++) {
             Thread.sleep(1000);
             try {
                 InputStream is = new URL("http://localhost:" + port + "/job/").openStream();
@@ -336,7 +339,7 @@ public class JobServiceTest {
             if (errorFile.exists())
                 for (String l : readFileLines(errorFile))
                     System.err.println("AWE server error: " + l);
-            throw new IllegalStateException("AWE server couldn't startup in 10 seconds (" + err.getMessage() + ")", err);
+            throw new IllegalStateException("AWE server couldn't startup in " + waitSec + " seconds (" + err.getMessage() + ")", err);
         }
         System.out.println(dir.getName() + " was started up");
         return port;
@@ -387,7 +390,8 @@ public class JobServiceTest {
                 ), scriptFile);
         ProcessHelper.cmd("bash", scriptFile.getCanonicalPath()).exec(dir);
         Exception err = null;
-        for (int n = 0; n < 10; n++) {
+        int waitSec = 30;
+        for (int n = 0; n < waitSec; n++) {
             Thread.sleep(1000);
             try {
                 InputStream is = new URL("http://localhost:" + aweServerPort + "/client/").openStream();
@@ -410,7 +414,7 @@ public class JobServiceTest {
             if (errorFile.exists())
                 for (String l : readFileLines(errorFile))
                     System.err.println("AWE client error: " + l);
-            throw new IllegalStateException("AWE client couldn't startup in 10 seconds (" + err.getMessage() + ")", err);
+            throw new IllegalStateException("AWE client couldn't startup in " + waitSec + " seconds (" + err.getMessage() + ")", err);
         }
         System.out.println(dir.getName() + " was started up");
         return port;
@@ -487,7 +491,8 @@ public class JobServiceTest {
         jettyServer.start();
         Exception err = null;
         JsonClientCaller caller = new JsonClientCaller(new URL("http://localhost:" + port + "/"));
-        for (int n = 0; n < 10; n++) {
+        int waitSec = 30;
+        for (int n = 0; n < waitSec; n++) {
             Thread.sleep(1000);
             try {
                 caller.jsonrpcCall("Unknown", new ArrayList<String>(), null, false, false);
@@ -503,7 +508,7 @@ public class JobServiceTest {
             }
         }
         if (err != null)
-            throw new IllegalStateException("Job service couldn't startup in 10 seconds (" + err.getMessage() + ")", err);
+            throw new IllegalStateException("Job service couldn't startup in " + waitSec + " seconds (" + err.getMessage() + ")", err);
         System.out.println(dir.getName() + " was started up");
         return jettyServer;
     }

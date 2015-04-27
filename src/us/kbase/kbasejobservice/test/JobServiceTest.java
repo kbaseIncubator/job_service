@@ -161,7 +161,7 @@ public class JobServiceTest {
                 ), scriptFile);
         ProcessHelper.cmd("bash", scriptFile.getCanonicalPath()).exec(dir);
         boolean ready = false;
-        int waitSec = 30;
+        int waitSec = 120;
         for (int n = 0; n < waitSec; n++) {
             Thread.sleep(1000);
             if (logFile.exists()) {

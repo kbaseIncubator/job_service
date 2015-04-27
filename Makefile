@@ -24,7 +24,7 @@ test-client:
 	@echo "No tests for client"
 
 test-service:
-	@echo "No tests for service"
+	ant -Djarsdir=$(JARS_DIR) test
 
 test-scripts:
 	@echo "No tests for scripts"

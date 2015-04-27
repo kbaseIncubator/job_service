@@ -466,7 +466,6 @@ public class JobServiceTest {
         File jobServiceCLI = new File(dir, KBaseJobServiceServer.AWE_CLIENT_SCRIPT_NAME);
         writeFileLines(Arrays.asList(
                 "#!/bin/bash",
-                "echo \"$KB_AUTH_TOKEN\"",
                 "java -cp " + System.getProperty("java.class.path") + 
                     " us.kbase.kbasejobservice.KBaseJobServiceScript \"" + configFile.getAbsolutePath() + "\" " +
                     "$1 \"$KB_AUTH_TOKEN\""

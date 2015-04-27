@@ -5,7 +5,8 @@ TARGET ?= /kb/deployment
 CURR_DIR = $(shell pwd)
 SERVICE_NAME = $(shell basename $(CURR_DIR))
 SERVICE_DIR = $(TARGET)/services/$(SERVICE_NAME)
-LIB_JARS_DIR = $(KB_TOP)/modules/jars/lib/jars
+JARS_DIR = $(KB_TOP)/modules/jars/lib/jars
+JARS_LIB_DIR = $(TARGET)/lib/jars
 WAR_FILE = KBaseJobService.war
 
 TARGET_PORT = 8200
@@ -15,7 +16,7 @@ default: compile
 
 deploy-all: deploy
 
-deploy: deploy-client deploy-service deploy-scripts deploy-docs
+deploy: deploy-client deploy-service deploy-scripts deploy-docs deploy-worker
 
 test: test-client test-service test-scripts
 
@@ -29,7 +30,7 @@ test-scripts:
 	@echo "No tests for scripts"
 
 compile: src
-	ant -Djarsdir=$(LIB_JARS_DIR) war
+	ant -Djarsdir=$(JARS_DIR) war
 
 deploy-client:
 	@echo "No deployment for client"
@@ -56,6 +57,10 @@ deploy-scripts:
 
 deploy-docs:
 	@echo "No documentation"
+	
+deploy-worker:
+	ant -Djarsdir=$(JARS_DIR) -Djarslibdir=$(JARS_LIB_DIR) -Dservicedir=$(SERVICE_DIR) script
+	cp -f ./dist/job_service_run_task.sh $(TARGET)/bin
 
 clean:
 	ant clean

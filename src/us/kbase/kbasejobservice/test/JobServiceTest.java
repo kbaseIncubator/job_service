@@ -57,6 +57,9 @@ public class JobServiceTest {
     private static File aweClientDir = null;
     private static File jobServiceDir = null;
     private static Server jobService = null;
+    
+    //private static final String testUjsUrl = "http://ci.kbase.us/services/userandjobstate";
+    private static final String testUjsUrl = "http://198.128.58.133/services/userandjobstate";
 
     @BeforeClass
     public static void beforeClass() throws Exception {
@@ -460,7 +463,7 @@ public class JobServiceTest {
         writeFileLines(Arrays.asList(
                 "[KBaseJobService]",
                 "scratch=" + dir.getAbsolutePath(),
-                "ujs.url=http://ci.kbase.us/services/userandjobstate",
+                "ujs.url=" + testUjsUrl,
                 "shock.url=http://localhost:" + shockPort + "/",
                 "awe.url=http://localhost:" + awePort + "/",
                 "client.job.service.url=http://localhost:" + port + "/",
